@@ -19,11 +19,15 @@
 	Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
+#ifndef	ESP8266
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
+#endif
 #include <Arduino.h>
-#include <NixieDriver.h>
+#include <NixieDriver_ESP.h>
+#ifndef	ESP8266
 #include <util/delay.h>
+#endif
 
 //#define DEBUG_TIMER
 //#define DEBUG_BACKFADE
@@ -31,19 +35,28 @@
 #define del 1
 #define STARTDELAY 1000
 #define calculateFadeColour(fadeIndex, i, fraction) (fadeSetup[(fadeIndex)][(i)] + ( (fraction) * ((fadeSetup[(fadeIndex)+1][3] != 0 ? fadeSetup[(fadeIndex)+1][(i)] : fadeSetup[0][(i)]) - fadeSetup[(fadeIndex)][(i)])))
-#define TIMERLIMIT 153846 //max 60 seconds on any colour
+#ifdef	ESP8266
+#define TicksPerMilli		1		// 1 tick every millisecond
+#else 	// ESP8266
+#define TicksPerMilli		2.56	// 2560 ticks per second
+#endif 	// ESP8266
+
+const int  StepsPerFade	    = 256;
+const int  TicksPerStep 	= (StepsPerFade / TicksPerMilli);
+const long MaxTicksPerCycle	= (60 * 1000) * TicksPerMilli;
+
 #define FADELIMIT 16 //maximum of 16 fade colours
 #define CYCLETYPE 17][4
 #define ENDCYCLE 0,0,0,0
 
-//nixie variables
+//nixie_esp variables
 int _dataPin;
 int _clockPin;
 int _outputEnablePin;
 int _strobePin;
 short _dpMask = 0x0; //mask for the decimal points
 bool _clockModeEnable = 0;
-int _symbolMask[6] = {0,0,0,0,0,0}; //for each nixie (0 = NONE, 1 = IN15A, 2 = IN15B)
+int _symbolMask[6] = {0,0,0,0,0,0}; //for each nixie_esp (0 = NONE, 1 = IN15A, 2 = IN15B)
 int _symbols[6] = {BLANK,BLANK,BLANK,BLANK,BLANK,BLANK};
 int _symbolDivisor = 1;
 
@@ -60,25 +73,33 @@ volatile unsigned long timerCount; //incremented on each timer call
 volatile int fadeIndex = 0; 
 volatile int fadeSetup[FADELIMIT + 1][4]; //holds the colour fade data
 
-const unsigned long TMR1Speed = 390; //2560 cals per second
+#ifndef	ESP8266
+const unsigned long TMR1Speed = 390; 	//2560 cals per second
+#else	// ESP8266
+Ticker ticker;
+#endif 	// ESP8266
 
-void* pt2object;
+void* pt2object = nullptr;
 
 //colours
 
-int backlight::black[3]  = 		{	BLACK	  };
-int backlight::white[3]  = 		{ 	WHITE     };
-int backlight::red[3]    = 		{ 	RED  	  };
-int backlight::green[3]  = 		{ 	GREEN	  };
-int backlight::blue[3]   = 		{	BLUE      };
-int backlight::yellow[3] = 		{ 	YELLOW 	  };
-int backlight::dimWhite[3] = 	{ 	DIMWHITE  };
-int backlight::aqua[3] = 		{ 	AQUA      };
-int backlight::magenta[3] = 	{	MAGENTA   };
-int backlight::purple[3]= 		{	PURPLE    };
+int backlight_esp::black[3]  = 		{	BLACK	  };
+int backlight_esp::white[3]  = 		{ 	WHITE     };
+int backlight_esp::red[3]    = 		{ 	RED  	  };
+int backlight_esp::green[3]  = 		{ 	GREEN	  };
+int backlight_esp::blue[3]   = 		{	BLUE      };
+int backlight_esp::yellow[3] = 		{ 	YELLOW 	  };
+int backlight_esp::dimWhite[3] = 	{ 	DIMWHITE  };
+int backlight_esp::aqua[3] = 		{ 	AQUA      };
+int backlight_esp::magenta[3] = 	{	MAGENTA   };
+int backlight_esp::purple[3]= 		{	PURPLE    };
 
-const float sineTable[] = {
-	0.000,0.000,0.000,0.001,0.001,0.001,0.002,0.002,
+// Preserve SRAM by putting the sineTable in PROGMEM
+// For faster access on devices with more SRAM, just
+// pull out the PROGMEM below and redefine the sin()
+// macro accordingly (see below)
+const float sineTable[] PROGMEM = {
+	0.000,0.000,0.000,0.001,0.001,0.001,0.002,0.,
 	0.003,0.004,0.004,0.005,0.006,0.007,0.008,0.009,
 	0.011,0.012,0.013,0.015,0.016,0.018,0.019,0.021,
 	0.023,0.025,0.027,0.029,0.031,0.033,0.035,0.038,
@@ -109,13 +130,16 @@ const float sineTable[] = {
 	0.962,0.965,0.967,0.969,0.971,0.973,0.975,0.977,
 	0.979,0.981,0.982,0.984,0.985,0.987,0.988,0.989,
 	0.991,0.992,0.993,0.994,0.995,0.996,0.996,0.997,
-	0.998,0.998,0.999,0.999,0.999,1.000,1.000,1.000,
+	0.998,0.998,0.999,0.999,0.999,1.000,1.000,1.000200,
 	1.000,
 };
 
+#define sin(i) (pgm_read_float(&sineTable[i]))
+//#define sin(i) (sineTable[i])
+
 /*-------------------NIXIE----------------------*/
 
-nixie::nixie(int dataPin, int clk, int oe, int srb) //initialise the library
+nixie_esp::nixie_esp(int dataPin, int clk, int oe, int srb) //initialise the library
 {
 	setDataPin(dataPin); //set up pins
 	setClk(clk);
@@ -125,7 +149,7 @@ nixie::nixie(int dataPin, int clk, int oe, int srb) //initialise the library
 	startupTransmission();
 }
 
-nixie::nixie(int dataPin, int clk, int oe) //initialise library
+nixie_esp::nixie_esp(int dataPin, int clk, int oe) //initialise library
 {
 	setDataPin(dataPin); //set up pins
 	setClk(clk);
@@ -134,7 +158,7 @@ nixie::nixie(int dataPin, int clk, int oe) //initialise library
 	startupTransmission();
 }
 
-nixie::nixie(int dataPin, int clk) //initialise library
+nixie_esp::nixie_esp(int dataPin, int clk) //initialise library
 {
 	setDataPin(dataPin); //set up pins
 	setClk(clk);
@@ -142,11 +166,11 @@ nixie::nixie(int dataPin, int clk) //initialise library
 	startupTransmission();
 }
 
-nixie::~nixie() //close instance of library
+nixie_esp::~nixie_esp() //close instance of library
 {
 }
 
-void nixie::startupTransmission(void)
+void nixie_esp::startupTransmission(void)
 {
 	short data[6] = {0x0,0x0,0x0,0x0,0x0,0x0};
 	shift(data);
@@ -155,45 +179,45 @@ void nixie::startupTransmission(void)
 		setDecimalPoint(i, 0);
 }
 
-void nixie::startupDelay() //delay to stop shit going wrong
+void nixie_esp::startupDelay() //delay to stop shit going wrong
 {
 	delay(STARTDELAY);
 }
 
-void nixie::setDataPin(int dataPin) //set the data pin
+void nixie_esp::setDataPin(int dataPin) //set the data pin
 {
 	pinMode(dataPin, 1);
 	_dataPin = dataPin;
 }
 
-void nixie::setClk(int clk) //set the clock pin
+void nixie_esp::setClk(int clk) //set the clock pin
 {
 	pinMode(clk, 1);
 	_clockPin = clk;
 }
 
-void nixie::setOE(int oe) //set the OE pin, and write it high
+void nixie_esp::setOE(int oe) //set the OE pin, and write it high
 {
 	pinMode(oe, 1);
 	digitalWrite(oe, 1);
 	_outputEnablePin = oe;
 }
 
-void nixie::setSrb(int srb) //set the strobe pin, and write it high
+void nixie_esp::setSrb(int srb) //set the strobe pin, and write it high
 {
 	pinMode(srb, 1);
 	digitalWrite(srb, 1);
 	_strobePin = srb;
 }
 
-void nixie::transmit(bool data)
+void nixie_esp::transmit(bool data)
 {
   digitalWrite(_clockPin, 1);
   digitalWrite(_dataPin, data);
   digitalWrite(_clockPin, 0);
 }
 
-void nixie::shift(short data[]) //shift out data to the HV5122
+void nixie_esp::shift(short data[]) //shift out data to the HV5122
 {
   blank(1);
   for(int i = 0; i < 8; i++)  //for the decimal points
@@ -210,7 +234,7 @@ void nixie::shift(short data[]) //shift out data to the HV5122
   blank(0);
 }
 
-void nixie::displayDigits(int a, int b, int c, int d, int e, int f) //display a number
+void nixie_esp::displayDigits(int a, int b, int c, int d, int e, int f) //display a number
 {
   int numbers[6] = {a, b, c, d, e, f}; 
   short data[6] = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
@@ -229,7 +253,7 @@ void nixie::displayDigits(int a, int b, int c, int d, int e, int f) //display a 
 }
 
 /*display a number with an integer input*/
-void nixie::disp(long num)
+void nixie_esp::disp(long num)
 {
 	int seg[6];
 	seg[0] = num / 100000;        	/*seperate the number into it's component digits*/
@@ -261,7 +285,7 @@ void nixie::disp(long num)
 	displayDigits(seg[0], seg[1], seg[2], seg[3], seg[4], seg[5]); /*display the number*/
 }
 
-void nixie::display(long num)
+void nixie_esp::display(long num)
 {
 	if(num < 0) num *= -1;
 	if(!_clockModeEnable) _dpMask = 0x0;
@@ -269,7 +293,7 @@ void nixie::display(long num)
 	disp(num);
 }
 
-void nixie::display(int num)
+void nixie_esp::display(int num)
 {
 	if(num < 0) num *= -1;
 	long longNum = num;
@@ -278,7 +302,7 @@ void nixie::display(int num)
 	disp(longNum);
 }
 
-void nixie::display(float num)
+void nixie_esp::display(float num)
 {
 	if(num < 0) num *= -1;
 	if(long(num*1000000) % 10 == 0) num += 0.000001;	/*fixes an issue which occurs when you input 2.1*/
@@ -307,19 +331,19 @@ void nixie::display(float num)
 	disp(dispNum);
 }
 
-void nixie::setDecimalPoint(int segment, bool state) /*sets the state of a given decimal point*/
+void nixie_esp::setDecimalPoint(int segment, bool state) /*sets the state of a given decimal point*/
 {
 	if(segment > 5) return;
 	if(state) _dpMask |= (1 << (7 - segment));
 	else _dpMask &= (0xFF ^ (1 << (7 - segment)));
 }
 
-void nixie::blank(bool state) //blank function
+void nixie_esp::blank(bool state) //blank function
 {
 	digitalWrite(_outputEnablePin, !state);
 }
 
-void nixie::setClockMode(bool state)
+void nixie_esp::setClockMode(bool state)
 {
 	_clockModeEnable = state;	//sets the clock mode on
 	for(int i = 0; i < 6; i++)
@@ -327,7 +351,7 @@ void nixie::setClockMode(bool state)
 	_dpMask = state ? 0x50 : 0x0; //sets the Decimal point mask to 001010000 - i.e. hh.mm.ss
 }
 
-void nixie::setSegment(int segment, int symbolType)
+void nixie_esp::setSegment(int segment, int symbolType)
 {
 	if(segment > 5 || segment < 0) return;
 	if(symbolType > 2 || symbolType < 0) return;
@@ -338,7 +362,7 @@ void nixie::setSegment(int segment, int symbolType)
 	_symbolMask[segment] = symbolType;
 }
 
-void nixie::setSymbol(int segment, int symbol)
+void nixie_esp::setSymbol(int segment, int symbol)
 {
 	if(segment > 5) return;
 	if(!_symbolMask[segment]) return;
@@ -346,57 +370,52 @@ void nixie::setSymbol(int segment, int symbol)
 	_symbols[segment] = symbol;
 }
 
-void nixie::setTime(int h, int m, int s) //sets the time variables
+void nixie_esp::setTime(int h, int m, int s) //sets the time variables
 {
 	hours = h;
 	minutes = m;
 	seconds = s;
 }
 
-void nixie::setHours(int h) //sets the hours
+void nixie_esp::setHours(int h) //sets the hours
 {
 	hours = h;
 }
 
-void nixie::setMinutes(int m) //sets the minutes
+void nixie_esp::setMinutes(int m) //sets the minutes
 {
 	minutes = m;
 }
 
-void nixie::setSeconds(int s) //sets the seconds
+void nixie_esp::setSeconds(int s) //sets the seconds
 {
 	seconds = s;
 }
 
-bool nixie::updateTime(void)
+bool nixie_esp::updateTime(void)
 {
 	if (!_clockModeEnable) return 0;
-	
-	uint8_t a = (hours > 23 ? BLANK : (hours / 10));
-	uint8_t b = (hours > 23 ? BLANK : (hours % 10));
-	uint8_t c = (minutes > 59 ? BLANK : (minutes / 10));
-	uint8_t d = (minutes > 59 ? BLANK : (minutes % 10));
-	uint8_t e = (seconds > 59 ? BLANK : (seconds / 10));
-	uint8_t f = (seconds > 59 ? BLANK : (seconds % 10));
-	
-	displayDigits(a, b, c, d, e, f);
-	
+	long dispNum = (10000 * hours) + (100 * minutes) + seconds;
+	disp(dispNum);
 	return 1;
 }
 
 /*-------------------------------------BACKLIGHT-----------------------------------*/
 
-backlight::backlight(uint8_t redPin, uint8_t greenPin, uint8_t bluePin) //set up the pins and turn the leds off
+backlight_esp::backlight_esp(uint8_t redPin, uint8_t greenPin, uint8_t bluePin) //set up the pins and turn the leds off
 {
 	_pins[0] = redPin;
 	_pins[1] = greenPin;
 	_pins[2] = bluePin;
+#ifdef 	ESP8266
+	analogWriteRange(255);
+#endif 	// ESP8266
 	for(int i = 0; i < 3; i++)
 		pinMode(_pins[i], 1);
 	setColour(black);
 }
 
-void backlight::setColour(int colour[]) //write a colour to the leds
+void backlight_esp::setColour(int colour[]) //write a colour to the leds
 {
 #ifdef DEBUG_TIMER
 	Serial.print("Set colour to: ");
@@ -413,13 +432,13 @@ void backlight::setColour(int colour[]) //write a colour to the leds
 	}
 }
 
-void backlight::crossFade(int startColour[], int endColour[], int duration) //crossfades between colours
+void backlight_esp::crossFade(int startColour[], int endColour[], int duration) //crossfades between colours
 {
 	int displayColour[3];
 	setColour(startColour); //start at the start colour
 	for (int i = 0; i < 256; i++) { //for all the entries in the sine table
 		for(int j = 0; j < 3; j++) { //for r, g, and b
-			displayColour[j] = startColour[j] + int(sineTable[i] * (endColour[j] - startColour[j]));
+			displayColour[j] = startColour[j] + int(sin(i) * (endColour[j] - startColour[j]));
 			//fade along a sine wave (between -90 and +90) between the two colours
 		}
 		setColour(displayColour); 
@@ -428,7 +447,7 @@ void backlight::crossFade(int startColour[], int endColour[], int duration) //cr
 	setColour(endColour); //end colour to finish
 }
 
-void backlight::fadeIn(int colour[], int duration) 
+void backlight_esp::fadeIn(int colour[], int duration) 
 {
 	int displayColour[3];
 	setColour(black); //start at black
@@ -442,14 +461,14 @@ void backlight::fadeIn(int colour[], int duration)
 	for(int i = 127; i < 256; i++) //for the second half of the fade, increase according to the sine
 	{
 		for(int j = 0; j < 3; j++)
-			displayColour[j] = int(sineTable[i] * colour[j]);
+			displayColour[j] = int(sin(i) * colour[j]);
 		setColour(displayColour);
 		delay(duration/252);
 	}
 	setColour(colour);
 }
 
-void backlight::fadeOut(int duration)
+void backlight_esp::fadeOut(int duration)
 {
 	int colour[3];
 	for(int i = 0; i < 3; i++)
@@ -458,7 +477,7 @@ void backlight::fadeOut(int duration)
 	for(int i = 255; i > 127; i--) //for the first half of the fade, decrease according to the sine
 	{
 		for(int j = 0; j < 3; j++)
-			displayColour[j] = int(sineTable[i] * colour[j]);
+			displayColour[j] = int(sin(i) * colour[j]);
 		setColour(displayColour);
 		delay(duration/254);
 	}
@@ -473,9 +492,12 @@ void backlight::fadeOut(int duration)
 }
 
 
-void backlight::setFade(int setup[][4])
+void backlight_esp::setFade(int setup[][4])
 {
+	pt2object = this;
+#ifndef	ESP8266
 	Timer1.initialize(TMR1Speed); //start the timer with 2560 steps per second
+#endif 	// ESP8266
 	
 	int i = 0;
 	while(setup[i][3] != 0 && i <= FADELIMIT - 1) //copy setup into fadeSetup
@@ -491,24 +513,30 @@ void backlight::setFade(int setup[][4])
 	}
 	
 	timerCount = 0;
+#ifdef	ESP8266
+	ticker.attach_ms((1/TicksPerMilli), isr);	// (1, isr_debug);
+#else  	// ESP8266
 	Timer1.attachInterrupt(isr);
+#endif	// ESP8266
 }
 
 
-void backlight::tmrFade()
+void backlight_esp::tmrFade()
 {
+#ifndef	ESP8266
 	Timer1.detachInterrupt();
+#endif 	// ESP8266
 
 	int displayColour[3]; //holds the current colour
 	
 	if(fadeSetup[0][3] == 0) stopFade(10); //if no setup had been done
 
-	int callColour = fadeSetup[fadeIndex][3] / 100;  //works out the minimum step
+	int callColour = fadeSetup[fadeIndex][3] / TicksPerStep;  //works out the minimum step
 
 	if(timerCount % callColour == 0) //if a colour change needs to be done
 	{
 		int colourTimer = timerCount / callColour; //work out the place in the sine table
-		float fraction = sineTable[colourTimer];
+		float fraction = sin(colourTimer);
 		for(int i = 0; i < 3; i++)
 		{
 			displayColour[i] = calculateFadeColour(fadeIndex, i, fraction); //calculate next display colour
@@ -516,38 +544,44 @@ void backlight::tmrFade()
 			currentFadeColour[i] = displayColour[i]; //update the current colour
 		}
 	}
-	
-	callColour = (fadeSetup[fadeIndex][3] / 100) * 256; //for when the colour is finished fading
-	
+
+	callColour = (fadeSetup[fadeIndex][3] / TicksPerStep) * 256; //for when the colour is finished fading
+
 	timerCount++;
-	if(timerCount % callColour == 0 || timerCount == TIMERLIMIT){
+	if(timerCount % callColour == 0 || timerCount == MaxTicksPerCycle){
 		fadeIndex++;
 		if (fadeIndex == FADELIMIT || fadeSetup[fadeIndex][3] == 0) //wrap index for 0 duration elements or for general wrap
 			fadeIndex = 0;
 		timerCount = 0;
 		//updateFadeTimer();
 	}
-	
-	Timer1.attachInterrupt(isr);
 
+#ifndef	ESP8266
+	Timer1.attachInterrupt(isr);
+#endif 	// ESP8266
 }
 
-void backlight::stopFade(int duration)
+void backlight_esp::stopFade(int duration)
 {
+#ifndef	ESP8266
 	Timer1.detachInterrupt();
 	Timer1.stop();
+#else 	// ESP8266
+	ticker.detach();
+#endif 	// ESP8266
 	setColour(currentFadeColour);
 	fadeOut(duration);
 }
 
-void backlight::isr(void)
+void backlight_esp::isr(void)
 {
-	backlight* mySelf = (backlight*) pt2object;
-	mySelf->tmrFade();
+	backlight_esp* mySelf = (backlight_esp*) pt2object;
+	if (mySelf != nullptr) mySelf->tmrFade();
 }
 
-void backlight::updateAnalogPin(volatile int pin, int val)
+void backlight_esp::updateAnalogPin(volatile int pin, int val)
 {
+#ifndef	ESP8266
 	// We need to make sure the PWM output is enabled for those pins
 	// that support it, as we turn it off when digitally reading or
 	// writing with them.  Also, make sure the pin is in output mode
@@ -674,11 +708,16 @@ void backlight::updateAnalogPin(volatile int pin, int val)
 		default:
 			break;
 	}
+#else 	// ESP8266
+	analogWrite(pin, val);
+#endif	// ESP8266
 }
 
 
 
 /*--------------- TIMER 1 CODE-------------------------*/
+#ifndef	ESP8266
+
 TimerOne Timer1;              // preinstatiate
 
 ISR(TIMER1_OVF_vect)          // interrupt service routine that wraps a user defined function supplied by attachInterrupt
@@ -763,4 +802,4 @@ void TimerOne::stop()
 {
   TCCR1B &= ~(_BV(CS10) | _BV(CS11) | _BV(CS12));          // clears all clock selects bits
 }
-
+#endif	// ESP8266

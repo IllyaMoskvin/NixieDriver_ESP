@@ -23,9 +23,11 @@
 #include <string.h>
 #include <math.h>
 
+#ifndef	ESP8266
 #include <avr/pgmspace.h>
 #include <avr/io.h>
 #include <avr/interrupt.h>
+#endif
 
 #ifndef NixieDriver_h
 #define NixieDriver_h
@@ -59,7 +61,9 @@
 #define FARADS 19
 #define BLANK 99
 
+#ifndef	ESP8266
 #define RESOLUTION 65536    // Timer1 is 16 bit
+#endif
 
 #define BLACK 0,0,0 
 #define WHITE 255,255,255
@@ -76,11 +80,11 @@
 
 
 
-class nixie
+class nixie_esp
 {
 	private:
 	
-		//static nixie *activate_object;
+		//static nixie_esp *activate_object;
 		void transmit(bool data);
 		void shift(short data[]);
 		void startupDelay(void);
@@ -99,10 +103,10 @@ class nixie
 		volatile long minutes;
 		volatile long seconds;
 		
-		nixie(int dataPin, int clk, int oe, int srb);
-		nixie(int dataPin, int clk, int oe);
-		nixie(int dataPin, int clk);
-		~nixie();
+		nixie_esp(int dataPin, int clk, int oe, int srb);
+		nixie_esp(int dataPin, int clk, int oe);
+		nixie_esp(int dataPin, int clk);
+		~nixie_esp();
 		
 		void displayDigits(int a, int b, int c, int d, int e, int f);
 		void display(float num);
@@ -122,7 +126,7 @@ class nixie
 };
 
 
-class backlight
+class backlight_esp
 {
 	private:
 	
@@ -146,7 +150,7 @@ class backlight
 		
 		int currentColour[3];
 		
-		backlight(uint8_t redPin, uint8_t bluePin, uint8_t greenPin);
+		backlight_esp(uint8_t redPin, uint8_t bluePin, uint8_t greenPin);
 		
 		void setColour(int colour[]);
 		void crossFade(int startColour[], int endColour[], int duration);
@@ -157,6 +161,7 @@ class backlight
 		void stopFade(int duration);
 };
 
+#ifndef	ESP8266
 class TimerOne
 {
 	public:
@@ -178,6 +183,10 @@ class TimerOne
 };
 
 extern TimerOne Timer1;
+#else
+#include <Ticker.h>
+extern Ticker ticker;
+#endif
 
 // Arduino 0012 workaround
 #undef int
